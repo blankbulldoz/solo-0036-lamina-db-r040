@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Bounded production walkthroughs using only the public HTTP service."""
 import argparse, concurrent.futures, json, os, pathlib, shutil, socket, subprocess, tempfile, time, urllib.request, urllib.error
-WORKFLOWS=['catalog-create','txn-write','snapshot-read','index-build','query-plan','sql-execute','txn-conflict','restart','checkpoint','backup-restore','changes','vacuum','transaction-close','statistics']
+WORKFLOWS=['catalog-create','txn-write','snapshot-read','index-build','query-plan','sql-execute','txn-conflict','restart','checkpoint','backup-restore','changes','vacuum','transaction-close','statistics','ordered-limit']
 class Session:
  def __init__(self,binary,root,restore=None):
   self.binary=str(binary);self.root=pathlib.Path(root);self.restore=restore;self.process=None;self.log=None
@@ -152,6 +152,37 @@ def walkthrough(name,binary):
     q=s.query(where=[{'column':'amplitude','op':'>=','value':40}],limit=2)
     require(q['matched']==3 and q['scanned']==3 and len(q['rows'])==2 and q['truncated'],'query fact meanings conflated')
     observations={'query':q,'stats':s.stats()}
+   elif name=='ordered-limit':
+    s.call('POST','/indexes',{'name':'by_band','relation':'spectra','column':'band'},201)
+    wide=s.query(order=[{'column':'band'}],limit=3);slow=s.query(force_scan=True,order=[{'column':'band'}],limit=3)
+    require(wide['plan']['access']=='ordered' and wide['rows']==slow['rows'],'ordered walk diverged from full evaluation')
+    require(wide['plan']['examined']<wide['plan']['candidates'] and wide['matched']<=slow['matched'],'walk facts exceed fallback bounds')
+    narrow=s.query(where=[{'column':'valid','op':'=','value':False}],order=[{'column':'band'}],limit=3)
+    require(narrow['matched']==1 and narrow['rows'][0]['sample']==7 and not narrow['truncated'],'exhausted walk lost exact facts')
+    tx=s.begin();s.put(tx,tuple_(3,band='b2x'));s.put(tx,tuple_(4,band='b2x'));s.call('POST',f'/transactions/{tx}/delete',{'relation':'spectra','key':2});s.commit(tx)
+    grouped=s.query(order=[{'column':'band'}],limit=3)
+    require([r['sample'] for r in grouped['rows']]==[1,3,4],'same-value group, stale entry or delete broke order')
+    desc=s.query(order=[{'column':'band','desc':True}],limit=2)
+    require([r['sample'] for r in desc['rows']]==[7,6],'descending walk picked wrong rows')
+    hist=s.stats()['sequence'];tx=s.begin();s.put(tx,tuple_(8,band='b0'));s.put(tx,tuple_(1,band='zz'))
+    inside=s.query(transaction=tx,order=[{'column':'band'}],limit=3)
+    require(inside['plan']['access']=='scan' and [r['sample'] for r in inside['rows']]==[8,3,4],'private writes leaked into walk')
+    require([r['sample'] for r in s.query(order=[{'column':'band'}],limit=3)['rows']]==[1,3,4],'uncommitted edit changed walk')
+    s.commit(tx)
+    require([r['sample'] for r in s.query(order=[{'column':'band'}],limit=3)['rows']]==[8,3,4],'committed edit missing from walk')
+    for band in ('x1','x2','b5'):
+     tx=s.begin();s.put(tx,tuple_(5,band=band));s.commit(tx)
+    sparse=s.query(where=[{'column':'valid','op':'=','value':False}],order=[{'column':'band'}],limit=3)
+    require(sparse['plan']['fallback'] and sparse['plan']['access']=='scan' and sparse['plan']['examined']>sparse['plan']['candidates'],'bloated walk did not fall back within budget')
+    require(sparse['matched']==1 and sparse['rows'][0]['sample']==7,'fallback result diverged')
+    before=s.query(order=[{'column':'band'}],limit=4);at_hist=s.query(at=hist,order=[{'column':'band'}],limit=3)
+    require([r['sample'] for r in at_hist['rows']]==[1,3,4],'historical snapshot walk wrong')
+    s.call('POST','/vacuum',{'horizon':hist})
+    require(before['rows']==s.query(order=[{'column':'band'}],limit=4)['rows'],'vacuum rebuild changed current order')
+    require(at_hist['rows']==s.query(at=hist,order=[{'column':'band'}],limit=3)['rows'],'vacuum rebuild spliced historical order')
+    default=s.query(limit=2)
+    require(default['plan']['access']!='ordered' and default['matched']==7 and default['truncated'],'default request semantics changed')
+    observations={'wide':wide,'sparse':sparse,'grouped':[r['sample'] for r in grouped['rows']]}
    else:raise ValueError(name)
    return {'workflow':name,'status':'observed','observations':observations}
   finally:

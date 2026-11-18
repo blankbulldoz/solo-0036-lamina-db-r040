@@ -63,4 +63,24 @@ func (t *Tree) Candidates(op string, value datum.Value) []string {
 	}
 	return out
 }
+
+// Iterate walks entries in index order (reversed when desc), stopping when
+// fn returns false. The slice is shared with the tree; callers must hold the
+// registry owner's lock for the whole walk so a rebuild cannot swap trees
+// mid-iteration.
+func (t *Tree) Iterate(desc bool, fn func(Entry) bool) {
+	if desc {
+		for i := len(t.entries) - 1; i >= 0; i-- {
+			if !fn(t.entries[i]) {
+				return
+			}
+		}
+		return
+	}
+	for _, e := range t.entries {
+		if !fn(e) {
+			return
+		}
+	}
+}
 func (t *Tree) Size() int { return len(t.entries) }

@@ -368,6 +368,30 @@
       "success": "query execution facts and database resource state produces a verified domain result",
       "failure": "candidates vs scanned vs returned have distinct meanings",
       "verification": "python3 examples/walkthrough.py --workflow statistics"
+    },
+    {
+      "id": "ordered-limit",
+      "name": "ordered index walk with bounded selection and budgeted fallback",
+      "entry": "POST /query with order and limit",
+      "steps": [
+        "transport",
+        "query",
+        "index",
+        "versions",
+        "datum",
+        "engine"
+      ],
+      "module_ids": [
+        "transport",
+        "engine",
+        "query",
+        "index",
+        "versions",
+        "datum"
+      ],
+      "success": "ordered walk, bounded selection and full evaluation return identical row order; bloated walks fall back within budget",
+      "failure": "historical candidates, same-value keys, deletes, private replacements or vacuum rebuilds change the chosen order",
+      "verification": "python3 examples/walkthrough.py --workflow ordered-limit"
     }
   ],
   "complexity": {

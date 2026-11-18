@@ -32,6 +32,13 @@ type Plan struct {
 	Candidates int    `json:"candidates"`
 	Snapshot   uint64 `json:"snapshot"`
 	Residuals  int    `json:"residuals"`
+	// Examined counts ordered-walk index entries inspected. On a completed
+	// ordered plan it is the actual early-termination cost; on a plan with
+	// Fallback set it is the abandoned walk's wasted work.
+	Examined int `json:"examined,omitempty"`
+	// Fallback records that an ordered walk exceeded its candidate budget
+	// and the result was produced by the bounded-selection plan instead.
+	Fallback bool `json:"fallback,omitempty"`
 }
 type Result struct {
 	Rows      []datum.Row `json:"rows"`

@@ -42,6 +42,20 @@ func (d *DB) Query(q query.Request) (query.Result, error) {
 		q.ForceScan = true
 	}
 	plan, keys := query.Choose(d.catalog, d.indexes, q, at, len(d.store.Tables[q.Relation]))
+	if ordered, tree, ok := query.OrderedPlan(d.catalog, r, d.indexes, q, at, plan.Candidates); ok {
+		// The walk and any fallback run inside this same lock and on the
+		// tree captured here, so a vacuum rebuild can never splice two
+		// index generations into one result.
+		result, completed := query.ExecuteOrdered(r, q, ordered, tree, func(key string) (datum.Row, bool) {
+			return d.store.Read(q.Relation, key, at)
+		})
+		if completed {
+			d.queries++
+			return result, nil
+		}
+		plan.Fallback = true
+		plan.Examined = result.Plan.Examined
+	}
 	rows := map[string]datum.Row{}
 	if plan.Access == "index" {
 		for _, key := range keys {

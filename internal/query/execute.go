@@ -5,7 +5,6 @@ import (
 	"lamina/internal/catalog"
 	"lamina/internal/datum"
 	"math"
-	"sort"
 )
 
 func Execute(r catalog.Relation, q Request, rows map[string]datum.Row, plan Plan, keys []string) (Result, error) {
@@ -13,19 +12,23 @@ func Execute(r catalog.Relation, q Request, rows map[string]datum.Row, plan Plan
 	if plan.Access == "scan" {
 		keys = datum.Keys(rows)
 	}
-	selected := make([]datum.Row, 0)
-	for _, key := range keys {
-		row, ok := rows[key]
-		if !ok {
-			continue
-		}
-		result.Scanned++
-		if Matches(row, q.Where) {
-			selected = append(selected, row)
-		}
+	limit := q.Limit
+	if limit == 0 {
+		limit = 1000
 	}
-	result.Matched = len(selected)
 	if q.Aggregate != nil {
+		selected := make([]datum.Row, 0)
+		for _, key := range keys {
+			row, ok := rows[key]
+			if !ok {
+				continue
+			}
+			result.Scanned++
+			if Matches(row, q.Where) {
+				selected = append(selected, row)
+			}
+		}
+		result.Matched = len(selected)
 		row, err := reduce(selected, *q.Aggregate)
 		if err != nil {
 			return result, err
@@ -33,39 +36,38 @@ func Execute(r catalog.Relation, q Request, rows map[string]datum.Row, plan Plan
 		result.Rows = append(result.Rows, row)
 		return result, nil
 	}
-	sort.Slice(selected, func(i, j int) bool {
-		for _, o := range q.Order {
-			n := datum.Order(selected[i][o.Column], selected[j][o.Column])
-			if n != 0 {
-				if o.Desc {
-					return n > 0
-				}
-				return n < 0
-			}
+	// Bounded selection: every candidate is still visibility-checked and
+	// counted, but only limit rows are ever retained for ordering.
+	top := newTopK(rowLess(q.Order, r.Primary), limit)
+	for _, key := range keys {
+		row, ok := rows[key]
+		if !ok {
+			continue
 		}
-		return datum.Order(selected[i][r.Primary], selected[j][r.Primary]) < 0
-	})
-	limit := q.Limit
-	if limit == 0 {
-		limit = 1000
-	}
-	if len(selected) > limit {
-		selected = selected[:limit]
-		result.Truncated = true
-	}
-	for _, row := range selected {
-		if len(q.Columns) == 0 {
-			result.Rows = append(result.Rows, datum.Clone(row))
-		} else {
-			projection := datum.Row{}
-			for _, name := range q.Columns {
-				projection[name] = row[name]
-			}
-			result.Rows = append(result.Rows, projection)
+		result.Scanned++
+		if Matches(row, q.Where) {
+			result.Matched++
+			top.offer(row)
 		}
+	}
+	result.Truncated = result.Matched > limit
+	for _, row := range top.sorted() {
+		result.Rows = append(result.Rows, project(row, q.Columns))
 	}
 	return result, nil
 }
+
+func project(row datum.Row, columns []string) datum.Row {
+	if len(columns) == 0 {
+		return datum.Clone(row)
+	}
+	projection := datum.Row{}
+	for _, name := range columns {
+		projection[name] = row[name]
+	}
+	return projection
+}
+
 func reduce(rows []datum.Row, a Aggregate) (datum.Row, error) {
 	var total int64
 	var count int64
